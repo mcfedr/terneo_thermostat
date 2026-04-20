@@ -1,0 +1,78 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Terneo Thermostat",
+        "description": "Enter the IP address and serial number of your Terneo device. The serial number is printed on a sticker on the device and is visible on its local page at http://<device ip>/index.html.",
+        "data": {
+          "host": "Host / IP address",
+          "port": "Port",
+          "serial": "Serial number",
+          "name": "Name",
+          "totp_key": "TOTP key (leave blank if LAN lock is off)",
+          "power_watts": "Heater power (watts, 0 to disable power sensor)",
+          "primary_sensor": "Temperature shown on the thermostat entity"
+        }
+      },
+      "discovery_confirm": {
+        "title": "Add Terneo {name}?",
+        "description": "Found a Terneo thermostat at {host} (serial {serial}).",
+        "data": {
+          "name": "Name",
+          "totp_key": "TOTP key (leave blank if LAN lock is off)",
+          "power_watts": "Heater power (watts, 0 to disable power sensor)",
+          "primary_sensor": "Temperature shown on the thermostat entity"
+        }
+      },
+      "fetch_totp": {
+        "title": "Fetch TOTP key from Terneo cloud",
+        "description": "Enter your my.terneo.ua account credentials. They are used once to fetch the device key and are not stored.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      }
+    },
+    "menu": {
+      "totp_method": {
+        "skip_totp": "Continue without TOTP (LAN lock is off)",
+        "fetch_totp": "Fetch TOTP key from Terneo cloud account"
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach the device. Check the IP address and that the local API is unlocked (bLc → off).",
+      "cloud_auth_failed": "Cloud login failed. Check your my.terneo.ua email and password.",
+      "cloud_device_not_found": "Device serial not found in your Terneo cloud account.",
+      "unknown": "Unexpected error. See Home Assistant logs for details."
+    },
+    "abort": {
+      "already_configured": "This device is already configured.",
+      "invalid_discovery": "The discovery broadcast was missing required fields."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Terneo options",
+        "data": {
+          "power_watts": "Heater power (watts)",
+          "primary_sensor": "Temperature shown on the thermostat entity"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "floor_temperature": {
+        "name": "Floor temperature"
+      },
+      "air_temperature": {
+        "name": "Air temperature"
+      },
+      "power": {
+        "name": "Power"
+      }
+    }
+  }
+}

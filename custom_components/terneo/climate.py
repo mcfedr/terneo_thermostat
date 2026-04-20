@@ -1,182 +1,186 @@
-"""Terneo Thermostat Support."""
-import logging
+"""Climate platform for Terneo thermostats."""
+from __future__ import annotations
 
-from .thermostat import Thermostat
-import requests
-import voluptuous as vol
-from typing import Optional
-from homeassistant.const import UnitOfTemperature
+import logging
+from typing import Any
 
 from homeassistant.components.climate import (
-    PLATFORM_SCHEMA,
     ClimateEntity,
     ClimateEntityFeature,
     HVACAction,
-    HVACMode
-    )
-from homeassistant.const import (
-    ATTR_TEMPERATURE,
-    CONF_HOST,
-    CONF_NAME,
-    CONF_PASSWORD,
-    CONF_PORT,
-    CONF_USERNAME,
+    HVACMode,
 )
-import homeassistant.helpers.config_validation as cv
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+from .const import (
+    CONF_PRIMARY_SENSOR,
+    DOMAIN,
+    MAX_TEMP,
+    MIN_TEMP,
+    PRESET_AWAY,
+    PRESET_MANUAL,
+    PRESET_SCHEDULE,
+    PRIMARY_AIR,
+    PRIMARY_FLOOR,
+    TEMP_STEP,
+)
+from .coordinator import TerneoCoordinator
+from .entity import TerneoEntity
 
 _LOGGER = logging.getLogger(__name__)
 
-CONF_SERIAL = "serial"
-
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
-    {
-        vol.Required(CONF_SERIAL): cv.string,
-        vol.Required(CONF_HOST): cv.string,
-        vol.Optional(CONF_NAME, default="Terneo"): cv.string,
-        vol.Optional(CONF_PORT, default=80): cv.port,
-        vol.Inclusive(CONF_USERNAME, "authentication"): cv.string,
-        vol.Inclusive(CONF_PASSWORD, "authentication"): cv.string,
-    }
-)
-
-SUPPORT_FLAGS = (ClimateEntityFeature.TARGET_TEMPERATURE | ClimateEntityFeature.TURN_ON | ClimateEntityFeature.TURN_OFF)
-SUPPORT_HVAC = [HVACMode.AUTO, HVACMode.HEAT, HVACMode.OFF]
-
-def setup_platform(hass, config, add_entities, discovery_info=None):
-    """Set up the Terneo platform."""
-    serialnumber = config.get(CONF_SERIAL)
-    name = config.get(CONF_NAME)
-    host = config.get(CONF_HOST)
-    port = config.get(CONF_PORT)
-    username = config.get(CONF_USERNAME)
-    password = config.get(CONF_PASSWORD)
-
-    try:
-        therm = Thermostat(serialnumber, host, port=port, username=username, password=password)
-    except (ValueError, AssertionError, requests.RequestException):
-        return False
-
-    add_entities((ThermostatDevice(therm, name),), True)
+SUPPORTED_HVAC_MODES = [HVACMode.OFF, HVACMode.AUTO, HVACMode.HEAT]
+SUPPORTED_PRESETS = [PRESET_SCHEDULE, PRESET_MANUAL, PRESET_AWAY]
 
 
-class ThermostatDevice(ClimateEntity):
-    """Interface class for the thermostat module."""
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up the Terneo climate entity."""
+    coordinator: TerneoCoordinator = hass.data[DOMAIN][entry.entry_id]
+    primary = entry.options.get(
+        CONF_PRIMARY_SENSOR, entry.data.get(CONF_PRIMARY_SENSOR, PRIMARY_AIR)
+    )
+    async_add_entities([TerneoClimate(coordinator, primary)])
 
-    def __init__(self, thermostat, name):
-        """Initialize the device."""
-        self._name = name
-        self.thermostat = thermostat
 
-        # set up internal state varS
-        self._available = False
-        self._state = None
-        self._temperature = None
-        self._setpoint = None
-        self._mode = None
+class TerneoClimate(TerneoEntity, ClimateEntity):
+    """Main thermostat entity for a Terneo device."""
+
+    _attr_name = None  # Use the device name
+    _attr_temperature_unit = UnitOfTemperature.CELSIUS
+    _attr_hvac_modes = SUPPORTED_HVAC_MODES
+    _attr_preset_modes = SUPPORTED_PRESETS
+    _attr_min_temp = MIN_TEMP
+    _attr_max_temp = MAX_TEMP
+    _attr_target_temperature_step = TEMP_STEP
+    _attr_supported_features = (
+        ClimateEntityFeature.TARGET_TEMPERATURE
+        | ClimateEntityFeature.PRESET_MODE
+        | ClimateEntityFeature.TURN_ON
+        | ClimateEntityFeature.TURN_OFF
+    )
+
+    def __init__(self, coordinator: TerneoCoordinator, primary_sensor: str) -> None:
+        super().__init__(coordinator)
+        self._primary_sensor = primary_sensor
+        self._attr_unique_id = f"{coordinator.client.serial}_climate"
+
+    # --------------------------------------------------------------- readings
 
     @property
-    def supported_features(self):
-        """Return the list of supported features."""
-        return SUPPORT_FLAGS
+    def current_temperature(self) -> float | None:
+        data = self.coordinator.data
+        if data is None:
+            return None
+        if self._primary_sensor == PRIMARY_FLOOR:
+            return data.floor_temp if data.floor_temp is not None else data.air_temp
+        return data.air_temp if data.air_temp is not None else data.floor_temp
 
     @property
-    def hvac_mode(self):
-        """Return hvac operation ie. heat, cool mode.
-        Need to be one of HVAC_MODE_*.
-        """
+    def target_temperature(self) -> float | None:
+        return self.coordinator.data.setpoint if self.coordinator.data else None
 
-        if self._mode == -1:
+    @property
+    def hvac_mode(self) -> HVACMode:
+        data = self.coordinator.data
+        if data is None or not data.is_on:
             return HVACMode.OFF
-        if self._mode == 3:
-            return HVACMode.HEAT
-        return HVACMode.AUTO
+        if data.is_schedule:
+            return HVACMode.AUTO
+        return HVACMode.HEAT
 
     @property
-    def hvac_modes(self):
-        """Return the list of available hvac operation modes.
-        Need to be a subset of HVAC_MODES.
-        """
-        return SUPPORT_HVAC
-
-    @property
-    def name(self):
-        """Return the name of this Thermostat."""
-        return self._name
-
-    @property
-    def temperature_unit(self):
-        """Return the unit of measurement used by the platform."""
-        return UnitOfTemperature.CELSIUS
-
-    @property
-    def hvac_action(self):
-        """Return current hvac i.e. heat, cool, idle."""
-        if self._mode == -1:
+    def hvac_action(self) -> HVACAction:
+        data = self.coordinator.data
+        if data is None or not data.is_on:
             return HVACAction.OFF
-        if self._state:
-            return HVACAction.HEATING
-        return HVACAction.IDLE
+        return HVACAction.HEATING if data.is_heating else HVACAction.IDLE
 
     @property
-    def current_temperature(self):
-        """Return the current temperature."""
-        return self._temperature
+    def preset_mode(self) -> str | None:
+        data = self.coordinator.data
+        if data is None or not data.is_on:
+            return None
+        if data.is_away:
+            return PRESET_AWAY
+        if data.is_schedule:
+            return PRESET_SCHEDULE
+        return PRESET_MANUAL
 
     @property
-    def target_temperature(self):
-        """Return the temperature we try to reach."""
-        return self._setpoint
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self.coordinator.data
+        if data is None:
+            return {}
+        return {
+            "floor_temperature": data.floor_temp,
+            "air_temperature": data.air_temp,
+            "raw_mode": data.mode,
+        }
 
-    @property
-    def target_temperature_step(self) -> Optional[float]:
-        """Return the supported step of target temperature."""
-        return 1.0
+    # --------------------------------------------------------------- commands
 
-    @property
-    def max_temp(self) -> Optional[int]:
-        """Return the maximum temperature."""
-        return 45
+    async def async_turn_on(self) -> None:
+        await self.coordinator.async_write(
+            lambda: self.coordinator.client.async_set_power(on=True)
+        )
 
-    @property
-    def min_temp(self) -> Optional[int]:
-        """Return the minimum temperature."""
-        return 5
+    async def async_turn_off(self) -> None:
+        await self.coordinator.async_write(
+            lambda: self.coordinator.client.async_set_power(on=False)
+        )
 
-    @property
-    def unique_id(self):
-        """Return unique ID based on Terneo serial number."""
-        return self.thermostat.sn
-    
-    @property
-    def available(self):
-        """Return available status based on device connectivity"""
-        return self.thermostat.available
-
-    def turn_on(self):
-        self.thermostat.turn_on()
-
-    def turn_off(self):
-        self.thermostat.turn_off()
-
-    def set_hvac_mode(self, hvac_mode):
-        """Set new target hvac mode."""
-        if hvac_mode == HVACMode.AUTO:
-            self.thermostat.mode = 0
+    async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
+        client = self.coordinator.client
+        if hvac_mode == HVACMode.OFF:
+            await self.coordinator.async_write(lambda: client.async_set_power(on=False))
+        elif hvac_mode == HVACMode.AUTO:
+            await self.coordinator.async_write(
+                lambda: client.async_set_mode(schedule=True)
+            )
         elif hvac_mode == HVACMode.HEAT:
-            self.thermostat.mode = 1
-        elif hvac_mode == HVACMode.OFF:
-            self.thermostat.turn_off()
+            await self.coordinator.async_write(
+                lambda: client.async_set_mode(schedule=False)
+            )
+        else:
+            _LOGGER.warning("Unsupported HVAC mode requested: %s", hvac_mode)
 
-    def set_temperature(self, **kwargs):
-        """Set the temperature."""
-        temp = kwargs.get(ATTR_TEMPERATURE)
-        self.thermostat.setpoint = temp
+    async def async_set_preset_mode(self, preset_mode: str) -> None:
+        client = self.coordinator.client
+        if preset_mode == PRESET_SCHEDULE:
+            await self.coordinator.async_write(
+                lambda: client.async_set_mode(schedule=True)
+            )
+        elif preset_mode == PRESET_MANUAL:
+            await self.coordinator.async_write(
+                lambda: client.async_set_mode(schedule=False)
+            )
+        elif preset_mode == PRESET_AWAY:
+            # Device doesn't accept mode=4 directly via par 2; the closest
+            # local-API substitute is manual mode with an away setpoint.
+            # We leave the setpoint alone and just flip into manual; users
+            # who need true scheduled away should use the Terneo app.
+            _LOGGER.info(
+                "Terneo 'away' preset is not settable via the local API; "
+                "falling back to manual mode"
+            )
+            await self.coordinator.async_write(
+                lambda: client.async_set_mode(schedule=False)
+            )
+        else:
+            _LOGGER.warning("Unknown preset requested: %s", preset_mode)
 
-    def update(self):
-        """Update local state."""
-        self.thermostat.update()
-        self._setpoint = self.thermostat.setpoint
-        self._temperature = self.thermostat.temperature
-        self._state = self.thermostat.state
-        self._mode = self.thermostat.mode
-        self._available = self.thermostat.available
+    async def async_set_temperature(self, **kwargs: Any) -> None:
+        temperature = kwargs.get(ATTR_TEMPERATURE)
+        if temperature is None:
+            return
+        temp_int = int(round(float(temperature)))
+        await self.coordinator.async_write(
+            lambda: self.coordinator.client.async_set_setpoint(temp_int)
+        )
